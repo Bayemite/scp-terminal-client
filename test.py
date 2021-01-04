@@ -16,8 +16,6 @@ import shlex
 import time
 import urllib.parse
 
-import os
-
 ####
 
 # Third-party
@@ -50,7 +48,7 @@ custom_theme = rich.theme.Theme(
         "link-style": "bold blue",
         "rule-style": "white on black",
         "em-style": "italic bold green",
-        "bold-style": "bold yellow"
+        "bold-style": "bold yellow",
     }
 )
 
@@ -125,22 +123,9 @@ def unique_name(base: str, name_list, insert: int = -1, overwrite: bool = False)
     return temp
 
 
-class UniqueNamer:
-    def __init__(self, used_names=[]):
-        """See unique_name function
-        This uses the function, but also stores the list of used names
-        """
-        self.used_names = used_names
-
-    def name(self, name: str, insert: int = -1, overwrite: bool = False) -> str:
-        temp = unique_name(name, self.used_names, insert, overwrite)
-        self.used_names.append(temp)
-        return temp
-
-
 def convert_linkables(soup: BeautifulSoup, content: BeautifulSoup) -> None:
 
-    link_names = UniqueNamer()
+    used_names = []  # Name-clash resolving
 
     # Open collapsibles data are removed as unwanted 'style="display: none"' tags
     collapsibles_closed = content.find(attrs={"class": "collapsible-block-folded"})
@@ -148,30 +133,28 @@ def convert_linkables(soup: BeautifulSoup, content: BeautifulSoup) -> None:
         new_tag = soup.new_tag("p")
         for block in collapsibles_closed:
             if block.string:
-                new_tag.string = linkable_style(link_names.name(block.string))
+                new_tag.string = unique_name(linkable_style(block.string), used_names)
             else:
-                new_tag.string = linkable_style(
-                    link_names.name("ANON-SECTION-0", overwrite=True)
+                new_tag.string = unique_name(
+                    linkable_style("ANON-SECTION-0"), used_names
                 )
-
+            used_names.append(str(new_tag.string))
             block.replace_with(new_tag)
 
     links = content.find_all("a")
     if links:
         for link in links:
             if link.string:
-                temp = link_names.name(linkable_style(link.string))
+                temp = unique_name(linkable_style(link.string), used_names)
                 link.string.replace_with(temp)
             else:
-                link.string = linkable_style(
-                    link_names.name("ANON-LINK-0", overwrite=True)
-                )
+                link.string = unique_name(linkable_style("ANON-LINK-0"), used_names)
 
     imgs = content.find_all("img")
     if imgs:
         for img in imgs:
             linktag = soup.new_tag("a")
-            linktag.string = linkable_style(link_names.name("IMAGE-0", overwrite=True))
+            linktag.string = unique_name(linkable_style("IMAGE-0"), used_names)
             if img.has_attr("src"):
                 linktag["href"] = img["src"]
             else:
@@ -219,36 +202,35 @@ def convert_for_terminal(soup: BeautifulSoup, content: BeautifulSoup) -> None:
     #             if header.string:
     #                 header.string.replace_with(markup.tags.center + header.string)
 
-def create_help_table():
-    return ([
-"""[bold-style]help:[/] help <topic>
+
+# Help topics, 1 string elem per topic
+help_list = [
+    """
+help: help <topic>
 Help for various topics and commands.
 
-[blue]Options[/]
+Options:
   <topic>=<syntax|navigation>
     = An optional help topic.
 """,
     """
-[bold-style]access:[/] access <id>
+access: access <SCP ID>
 Access the SCP logfile specified.
 """,
     """
-[bold-style]open:[/] open <tag>
+open: open <tag>
 Access a link in the current logfile.
 Section tags are denoted by blue <...> tokens.
-
-[blue]Options[/]
+Options:
   <tag> = An tag: the full string contained within the <...> tags.
              May be an image, link to another log, or a collapsed section.
 """,
     """
-[bold-style]exit:[/]
-Exit the session.
+exit: exit
+Exit the terminal.
+Try Ctrl+C when exit command is unavailable.
 """,
-"""
-[bold-style]cls:[/]
-Clear the screen."""
-])
+]
 
 # None if no title found
 def page_title(soup: BeautifulSoup) -> str:
@@ -266,18 +248,15 @@ def get_content(soup: BeautifulSoup):
 # Returns None on failure
 # Else returns whole BeautifulSoup obj
 def print_page(url: str, console: rich.console.Console) -> BeautifulSoup:
-    try:
-        response = requests.get(url)
-    except requests.ConnectionError as e:
-        print(f"Connection error: {e.strerror}")
-    soup = BeautifulSoup(response.text, parser)
+    response = requests.get(url)
+    with open("images-test.html") as f:
+        soup = BeautifulSoup(f.read(), parser)
 
     for string in soup.strings:
         string.replace_with(rich.markup.escape(string))
     content = get_content(soup)
     if not content:
-        print(f"Could not find content.")
-        return None
+        content = soup
 
     remove_unwanted(content)
     convert_for_terminal(soup, content)
@@ -322,7 +301,7 @@ def print_page(url: str, console: rich.console.Console) -> BeautifulSoup:
     return soup
 
 
-class NavInfo:
+class nav_info:
     def __init__(self):
         self.url = ""
         self.content = None
@@ -345,87 +324,77 @@ class NavInfo:
             self.url = None
 
 
-def open_cmd(args, console : rich.console.Console, info : NavInfo) -> None:
-    if len(args) != 2:
-            print("Usage: open <tag>\n")
-    elif len(info.url_path) == 0 or not info.content:
-        print(f"Not in a logfile. Cannot open '{args[1]}'.\n")
-    else:
-        links = info.content.find_all(is_linkable)
-        if links:
-            found = False
-            for link in links:
-                if link.string and args[1] == linkable_style(
-                    link.string, False
-                ):
-                    if (
-                        not link.has_attr("href")
-                        or not link["href"]
-                        or link["href"]
-                        == "javascript:;"  # Misc. doesn't work for HTML requests
-                    ):
-                        continue
-
-                    url = urllib.parse.urljoin(url, link["href"])
-                    soup = print_page(url, console)
-                    info.update(url, soup)
-                    if soup:
-                        found = True
-                        break
-            if not found:
-                print("No openable links found.\n")
-        else:
-            print("No openable links found.\n")
-        
-def access_cmd(args, console : rich.console.Console, info : NavInfo):
-    print_error = lambda: print("Usage: access <id>\n")
-    if len(args) == 2:
-        try:
-            scp_num = int(args[1])
-            if scp_num < 0:
-                print("Need non-negative id.\n")
-        except ValueError:
-            print_error()
-        else:
-            scp_num = three_digit(scp_num)
-            url = f"http://www.scpwiki.com/scp-{scp_num}"
-            soup = print_page(url, console)
-            info.update(url, soup, True)
-    else:
-        print_error()
-
 def main():
-    help_table = create_help_table()
     console = rich.console.Console(highlight=False, theme=custom_theme)
-    info = NavInfo()
 
-    error_msg = lambda: print("Unknown command. Try 'help'.\n")
-    
+    info = nav_info()
+
     while True:
         st = ""
         st = input(f"{'/'.join(info.title_path)}> ")
-        try:
-            args = shlex.split(st)
-        except ValueError:
-            error_msg()
-            continue
+        args = shlex.split(st)
         if len(args) == 0:
             continue
         elif args[0] == "help":
-            for i in sorted(help_table):
-                console.print(i)
+            for topic in sorted(help_list):
+                print(topic)
         elif args[0] == "open":
-            open_cmd(args, console, info)
-        elif args[0] == "cls":
-            os.system("cls" if os.name == "nt" else "clear")
+            if len(args) != 2:
+                print("Usage: open <tag>\n")
+            elif len(info.url_path) == 0 or not info.content:
+                print(f"Not in a logfile. Cannot open '{args[1]}'.\n")
+            else:
+                links = info.content.find_all(is_linkable)
+                if links:
+                    found = False
+                    for link in links:
+                        if link.string and args[1] == linkable_style(
+                            link.string, False
+                        ):
+                            if (
+                                not link.has_attr("href")
+                                or not link["href"]
+                                or link["href"]
+                                == "javascript:;"  # Misc. doesn't work for HTML requests
+                            ):
+                                continue
+
+                            url = urllib.parse.urljoin(url, link["href"])
+                            soup = print_page(url, console)
+                            info.update(url, soup)
+                            if soup:
+                                found = True
+                                break
+                    if not found:
+                        print("No openable links available.\n")
+                else:
+                    print("No openable links found.\n")
+
         elif args[0] == "access":
-            access_cmd(args, console, info)
+            print_error = lambda: print("Usage: access <SCP ID>")
+            if len(args) == 2:
+                try:
+                    scp_num = int(args[1])
+                    if scp_num < 0:
+                        print("Need non-negative SCP ID\n")
+                        continue
+                except ValueError:
+                    print_error()
+                else:
+                    scp_num = three_digit(scp_num)
+
+                    url = f"http://www.scpwiki.com/scp-{scp_num}"
+                    soup = print_page(url, console)
+                    info.update(url, soup, True)
+            else:
+                print_error()
+                continue
+
         elif args[0] == "exit":
             print_exit()
             return
         else:
-            error_msg()
-            
+            print("Unknown command. Try 'help'.")
 
 
 if __name__ == "__main__":
