@@ -1,5 +1,6 @@
 # TODO: nav forward/backward thru url history
 # TODO-Feature: suggestions for user: close matches when nav-ing using 'open' or 'access'
+# TODO: IMG and collapsible P linkaables
 
 # dbSearch- searchs for tag/phrase
 # http://www.scpwiki.com/scp-4450/offset/1
@@ -16,6 +17,7 @@ import shlex
 import time
 import urllib.parse
 
+from io import BytesIO
 import os
 
 ####
@@ -28,6 +30,9 @@ import rich
 import rich.console  # Cause rich doesn't the sub thingys for some reason
 import rich.rule  ##
 
+import tkinter as tk
+from PIL import ImageTk
+from PIL import Image
 ####
 
 # Own
@@ -37,12 +42,14 @@ import markup
 
 parser = "html5lib"
 
+linkable_attr = "data-linkable"
+
 scp_classes = {
     "Safe": "bold green",
-    "Euclid": "bold yellow",
+    "Euclid": "yellow",
     "Keter": "bold red",
     "Thaumiel": "gray",
-    "Neutralized": "bold gray",
+    "Neutralized": "gray",
 }
 
 custom_theme = rich.theme.Theme(
@@ -50,7 +57,7 @@ custom_theme = rich.theme.Theme(
         "link-style": "bold blue",
         "rule-style": "white on black",
         "em-style": "italic bold green",
-        "bold-style": "bold yellow"
+        "bold-style": "bold yellow",
     }
 )
 
@@ -97,7 +104,7 @@ def remove_unwanted(content: BeautifulSoup) -> None:
 # Use as callback in BeautifulSoup find/find_all functions to find all linkables (links, imgs)
 # See convert_linkables for more
 def is_linkable(tag):
-    return tag.name == "a"
+    return tag.has_attr(linkable_attr)
 
 
 # Get rid of markup/add markup to the linkable
@@ -108,75 +115,46 @@ def linkable_style(string: str, add_style: bool = True):
         return rich.text.Text.from_markup(string).plain[1:-1]
 
 
-def unique_name(base: str, name_list, insert: int = -1, overwrite: bool = False):
-    if insert < 0:
-        insert += len(base) + 1
-
-    i = 0
-    temp = base
-    while temp in name_list:
-        temp = base
-        if overwrite:
-            temp = base[: insert - 1] + str(i) + base[insert:]
-        else:
-            temp = base[:insert] + str(i) + base[insert:]
-        i += 1
-
-    return temp
-
-
-class UniqueNamer:
-    def __init__(self, used_names=[]):
-        """See unique_name function
-        This uses the function, but also stores the list of used names
-        """
-        self.used_names = used_names
-
-    def name(self, name: str, insert: int = -1, overwrite: bool = False) -> str:
-        temp = unique_name(name, self.used_names, insert, overwrite)
-        self.used_names.append(temp)
-        return temp
-
-
 def convert_linkables(soup: BeautifulSoup, content: BeautifulSoup) -> None:
-
-    link_names = UniqueNamer()
-
+    
     # Open collapsibles data are removed as unwanted 'style="display: none"' tags
     collapsibles_closed = content.find(attrs={"class": "collapsible-block-folded"})
     if collapsibles_closed:
         new_tag = soup.new_tag("p")
+        i = 0
         for block in collapsibles_closed:
             if block.string:
-                new_tag.string = linkable_style(link_names.name(block.string))
+                new_tag.string = linkable_style(block.string)
             else:
-                new_tag.string = linkable_style(
-                    link_names.name("ANON-SECTION-0", overwrite=True)
-                )
+                new_tag.string = linkable_style(f"ANON-SECTION-{i}")
+                i += 1
 
             block.replace_with(new_tag)
 
-    links = content.find_all("a")
+    links = content.find_all('a')
     if links:
+        i = -1
         for link in links:
-            if link.string:
-                temp = link_names.name(linkable_style(link.string))
-                link.string.replace_with(temp)
-            else:
-                link.string = linkable_style(
-                    link_names.name("ANON-LINK-0", overwrite=True)
-                )
+            i += 1
+            if not link.string:
+                continue
+            temp = linkable_style(link.string)
+            link.string.replace_with(temp)
+            
+            link[linkable_attr] = 'link'
 
     imgs = content.find_all("img")
     if imgs:
-        for img in imgs:
-            linktag = soup.new_tag("a")
-            linktag.string = linkable_style(link_names.name("IMAGE-0", overwrite=True))
-            if img.has_attr("src"):
-                linktag["href"] = img["src"]
-            else:
-                linktag["href"] = None
-            img.replace_with(linktag)
+        tag = soup.new_tag('a')
+        for i, img in enumerate(imgs):          
+            tag.string = linkable_style(f"IMAGE-{i}")
+            tag["href"] = img['src']
+            tag[linkable_attr] = 'img'
+            img.replace_with(tag)
+
+
+                
+
 
 
 def convert_for_terminal(soup: BeautifulSoup, content: BeautifulSoup) -> None:
@@ -219,20 +197,23 @@ def convert_for_terminal(soup: BeautifulSoup, content: BeautifulSoup) -> None:
     #             if header.string:
     #                 header.string.replace_with(markup.tags.center + header.string)
 
+
 def create_help_table():
-    return ([
-"""[bold-style]help:[/] help <topic>
+    return [
+        """
+[bold-style]help:[/] help <topic>
 Help for various topics and commands.
 
 [blue]Options[/]
   <topic>=<syntax|navigation>
     = An optional help topic.
+
 """,
-    """
+        """
 [bold-style]access:[/] access <id>
 Access the SCP logfile specified.
 """,
-    """
+        """
 [bold-style]open:[/] open <tag>
 Access a link in the current logfile.
 Section tags are denoted by blue <...> tokens.
@@ -240,15 +221,18 @@ Section tags are denoted by blue <...> tokens.
 [blue]Options[/]
   <tag> = An tag: the full string contained within the <...> tags.
              May be an image, link to another log, or a collapsed section.
+             
 """,
-    """
+        """
 [bold-style]exit:[/]
 Exit the session.
 """,
-"""
+        """
 [bold-style]cls:[/]
-Clear the screen."""
-])
+Clear the screen.
+""",
+    ]
+
 
 # None if no title found
 def page_title(soup: BeautifulSoup) -> str:
@@ -284,7 +268,7 @@ def print_page(url: str, console: rich.console.Console) -> BeautifulSoup:
 
     title = page_title(soup)
 
-    print("\n")
+    print("\n\n")
     console.rule(style="rule-style")
     console.print(f"[rule-style]{title}[/]", justify="center")
     console.rule(style="rule-style")
@@ -319,6 +303,12 @@ def print_page(url: str, console: rich.console.Console) -> BeautifulSoup:
         # time.sleep(0.05)
         # input()
 
+    print("\n\n")
+    console.rule(style="rule-style")
+    console.print(f"[rule-style]END OF LOG[/]", justify="center")
+    console.rule(style="rule-style")
+    print("\n\n")
+    
     return soup
 
 
@@ -334,6 +324,7 @@ class NavInfo:
     def update(self, url: str, soup: BeautifulSoup, clear_path: bool = False):
         if soup:
             self.content = get_content(soup)
+            self.url = url
             self.url_history.append(url)
             if clear_path:
                 self.url_path.clear()
@@ -345,39 +336,52 @@ class NavInfo:
             self.url = None
 
 
-def open_cmd(args, console : rich.console.Console, info : NavInfo) -> None:
+def open_cmd(args, console: rich.console.Console, info: NavInfo) -> None:
     if len(args) != 2:
-            print("Usage: open <tag>\n")
-    elif len(info.url_path) == 0 or not info.content:
+        print("Usage: open <tag>\n")
+    elif not info.url:
         print(f"Not in a logfile. Cannot open '{args[1]}'.\n")
     else:
         links = info.content.find_all(is_linkable)
         if links:
             found = False
             for link in links:
-                if link.string and args[1] == linkable_style(
-                    link.string, False
-                ):
+                if link.string and args[1] == linkable_style(link.string, False):
                     if (
                         not link.has_attr("href")
-                        or not link["href"]
                         or link["href"]
                         == "javascript:;"  # Misc. doesn't work for HTML requests
                     ):
                         continue
-
-                    url = urllib.parse.urljoin(url, link["href"])
-                    soup = print_page(url, console)
-                    info.update(url, soup)
-                    if soup:
+                    
+                    url = urllib.parse.urljoin(info.url, link["href"])
+                    if link[linkable_attr] == 'img':
+                        name = args[1]
+                        print(f"Opening {name}.")
+                        root = tk.Tk(name)
+                        root.geometry("400x300")
+                        r = requests.get(url)
+                        img = Image.open(BytesIO(r.content))
+                        tk_img = ImageTk.PhotoImage(img)
+                        label = tk.Label(root, image=tk_img)
+                        label.pack()
+                        label.image = tk_img
+                        root.mainloop()
                         found = True
-                        break
+                        print("Closed image.\n")
+                    else:
+                        soup = print_page(url, console)
+                        info.update(url, soup)
+                        if soup:
+                            found = True
+                            break
             if not found:
                 print("No openable links found.\n")
         else:
             print("No openable links found.\n")
-        
-def access_cmd(args, console : rich.console.Console, info : NavInfo):
+
+
+def access_cmd(args, console: rich.console.Console, info: NavInfo):
     print_error = lambda: print("Usage: access <id>\n")
     if len(args) == 2:
         try:
@@ -394,13 +398,14 @@ def access_cmd(args, console : rich.console.Console, info : NavInfo):
     else:
         print_error()
 
+
 def main():
     help_table = create_help_table()
     console = rich.console.Console(highlight=False, theme=custom_theme)
     info = NavInfo()
 
     error_msg = lambda: print("Unknown command. Try 'help'.\n")
-    
+
     while True:
         st = ""
         st = input(f"{'/'.join(info.title_path)}> ")
@@ -425,7 +430,6 @@ def main():
             return
         else:
             error_msg()
-            
 
 
 if __name__ == "__main__":
