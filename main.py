@@ -1,6 +1,6 @@
 # TODO: nav forward/backward thru url history
 # TODO-Feature: suggestions for user: close matches when nav-ing using 'open' or 'access'
-# TODO: IMG and collapsible P linkaables
+# TODO: collapsible P linkaables
 
 # dbSearch- searchs for tag/phrase
 # http://www.scpwiki.com/scp-4450/offset/1
@@ -140,21 +140,17 @@ def convert_linkables(soup: BeautifulSoup, content: BeautifulSoup) -> None:
                 continue
             temp = linkable_style(link.string)
             link.string.replace_with(temp)
-            
+
             link[linkable_attr] = 'link'
 
     imgs = content.find_all("img")
     if imgs:
         tag = soup.new_tag('a')
         for i, img in enumerate(imgs):          
-            tag.string = linkable_style(f"IMAGE-{i}")
+            tag.string = linkable_style(f"IMG-{i}")
             tag["href"] = img['src']
             tag[linkable_attr] = 'img'
             img.replace_with(tag)
-
-
-                
-
 
 
 def convert_for_terminal(soup: BeautifulSoup, content: BeautifulSoup) -> None:
@@ -180,22 +176,17 @@ def convert_for_terminal(soup: BeautifulSoup, content: BeautifulSoup) -> None:
         for hr in h_rules:
             hr.replace_with(line_tag)
 
-    check_style = (
+    ctr_style = (
         lambda tag: tag.has_attr("style") and "text-align: center" in tag["style"]
     )
-    centers = content.find_all(check_style)
+    centers = content.find_all(ctr_style)
     if centers:
         for c in centers:
             for d in c.children:
                 if d.string:
                     d.string.replace_with(markup.tag.center + d.string)
 
-    # for i in range(1, 7):
-    #     headers = content.find_all(f'h{i}')
-    #     if headers:
-    #         for header in headers:
-    #             if header.string:
-    #                 header.string.replace_with(markup.tags.center + header.string)
+    
 
 
 def create_help_table():
@@ -343,7 +334,9 @@ def open_cmd(args, console: rich.console.Console, info: NavInfo) -> None:
         print(f"Not in a logfile. Cannot open '{args[1]}'.\n")
     else:
         links = info.content.find_all(is_linkable)
-        if links:
+        if not links:
+            print("No openable links found.\n")
+        else:
             found = False
             for link in links:
                 if link.string and args[1] == linkable_style(link.string, False):
@@ -358,8 +351,8 @@ def open_cmd(args, console: rich.console.Console, info: NavInfo) -> None:
                     if link[linkable_attr] == 'img':
                         name = args[1]
                         print(f"Opening {name}.")
-                        root = tk.Tk(name)
-                        root.geometry("400x300")
+                        root = tk.Tk(className=name)
+                        root.resizable(False, False)
                         r = requests.get(url)
                         img = Image.open(BytesIO(r.content))
                         tk_img = ImageTk.PhotoImage(img)
@@ -377,8 +370,6 @@ def open_cmd(args, console: rich.console.Console, info: NavInfo) -> None:
                             break
             if not found:
                 print("No openable links found.\n")
-        else:
-            print("No openable links found.\n")
 
 
 def access_cmd(args, console: rich.console.Console, info: NavInfo):
