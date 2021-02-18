@@ -1,6 +1,7 @@
 # TODO: nav forward/backward thru url history
 # TODO-Feature: suggestions for user: close matches when nav-ing using 'open' or 'access'
 # TODO: collapsible P linkaables
+# TODO: Complete help table
 
 # dbSearch- searchs for tag/phrase
 # http://www.scpwiki.com/scp-4450/offset/1
@@ -11,10 +12,14 @@ try:
     import readline  # For smart input()'s for GNU
 except ImportError:
     pass
+
+
+
+import copy
+import time
 import shutil
 import textwrap
 import shlex
-import time
 import urllib.parse
 
 from io import BytesIO
@@ -24,7 +29,9 @@ import os
 
 # Third-party
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup # + html5lib parser
+
+from prettytable import PrettyTable
 
 import rich
 import rich.console  # Cause rich doesn't the sub thingys for some reason
@@ -33,6 +40,7 @@ import rich.rule  ##
 import tkinter as tk
 from PIL import ImageTk
 from PIL import Image
+
 ####
 
 # Own
@@ -99,17 +107,26 @@ def remove_unwanted(content: BeautifulSoup) -> None:
     if unwanted:
         for i in unwanted:
             i.decompose()
+    
+    unwanted = content.find_all("script")
+    if unwanted:
+        for i in unwanted:
+            i.decompose()
 
-
+    
 # Use as callback in BeautifulSoup find/find_all functions to find all linkables (links, imgs)
 # See convert_linkables for more
 def is_linkable(tag):
     return tag.has_attr(linkable_attr)
 
 
+class style:
+    remove = 0
+    add = 1
+
 # Get rid of markup/add markup to the linkable
-def linkable_style(string: str, add_style: bool = True):
-    if add_style:
+def linkable_style(string: str, add_style: style = style.add):
+    if add_style == style.add:
         return f"[link-style]<{string}>[/]"
     else:
         return rich.text.Text.from_markup(string).plain[1:-1]
@@ -120,16 +137,17 @@ def convert_linkables(soup: BeautifulSoup, content: BeautifulSoup) -> None:
     # Open collapsibles data are removed as unwanted 'style="display: none"' tags
     collapsibles_closed = content.find(attrs={"class": "collapsible-block-folded"})
     if collapsibles_closed:
-        new_tag = soup.new_tag("p")
+        tag = soup.new_tag("p")
+        tag[linkable_attr] = 'collapsible'
         i = 0
         for block in collapsibles_closed:
             if block.string:
-                new_tag.string = linkable_style(block.string)
+                tag.string = linkable_style(block.string)
             else:
-                new_tag.string = linkable_style(f"ANON-SECTION-{i}")
+                tag.string = linkable_style(f"ANON-SECTION-{i}")
                 i += 1
 
-            block.replace_with(new_tag)
+            block.replace_with(tag)
 
     links = content.find_all('a')
     if links:
@@ -146,10 +164,10 @@ def convert_linkables(soup: BeautifulSoup, content: BeautifulSoup) -> None:
     imgs = content.find_all("img")
     if imgs:
         tag = soup.new_tag('a')
+        tag[linkable_attr] = 'img'
         for i, img in enumerate(imgs):          
             tag.string = linkable_style(f"IMG-{i}")
             tag["href"] = img['src']
-            tag[linkable_attr] = 'img'
             img.replace_with(tag)
 
 
@@ -186,6 +204,20 @@ def convert_for_terminal(soup: BeautifulSoup, content: BeautifulSoup) -> None:
                 if d.string:
                     d.string.replace_with(markup.tag.center + d.string)
 
+    blocks = content.find_all("blockquote")
+    if blocks:
+        start_tag = soup.new_tag('p')
+        start_tag.string = '[blockquote]'
+        end_tag = soup.new_tag('p')
+        end_tag.string = '[/blockquote]'
+        for block in blocks:
+            block.insert_before(start_tag)
+            block.insert_after(end_tag)
+    
+
+
+            
+    
     
 
 
@@ -263,22 +295,33 @@ def print_page(url: str, console: rich.console.Console) -> BeautifulSoup:
     console.rule(style="rule-style")
     console.print(f"[rule-style]{title}[/]", justify="center")
     console.rule(style="rule-style")
+    time.sleep(1)
+    wrap_text = lambda text: text
+    # textwrap.fill( # Use this block for left/right margins in terminal (may break table formatting)
+    #     text,
+    #     shutil.get_terminal_size().columns - 10,
+    #     initial_indent=" " * 5,
+    #     subsequent_indent=" " * 5,
+    # )
 
-    wrap_text = lambda text: textwrap.fill(
-        line,
-        shutil.get_terminal_size().columns - 10,
-        initial_indent=" " * 5,
-        subsequent_indent=" " * 5,
-    )
-
+    is_block = False
+    table = PrettyTable()
+    table.header = False
+    
     for line in content.get_text().splitlines():
 
+        if not line.strip():
+            continue
+        
         for scp_class, color in scp_classes.items():
             line = line.replace(scp_class, f"[{color}]{scp_class}[/]")
 
         if markup.tag.rule in line:
             console.rule(style="rule-style")
             console.print("\n")
+        elif '[blockquote]' in line:
+            is_block = True
+            
         elif markup.tag.center in line:
             line = wrap_text(line)
             try:
@@ -291,12 +334,10 @@ def print_page(url: str, console: rich.console.Console) -> BeautifulSoup:
                 console.print(line, end="\n\n")
             except Exception:
                 pass
-        # time.sleep(0.05)
-        # input()
 
     print("\n\n")
     console.rule(style="rule-style")
-    console.print(f"[rule-style]END OF LOG[/]", justify="center")
+    console.print(f"[rule-style]FILE END[/]", justify="center")
     console.rule(style="rule-style")
     print("\n\n")
     
@@ -314,6 +355,7 @@ class NavInfo:
     # Soup can be None to indicate a unsucessful url request- everything is ignored
     def update(self, url: str, soup: BeautifulSoup, clear_path: bool = False):
         if soup:
+            self.original_soup = copy.copy(soup)
             self.content = get_content(soup)
             self.url = url
             self.url_history.append(url)
@@ -337,21 +379,27 @@ def open_cmd(args, console: rich.console.Console, info: NavInfo) -> None:
         if not links:
             print("No openable links found.\n")
         else:
+            query = args[1]
             found = False
             for link in links:
-                if link.string and args[1] == linkable_style(link.string, False):
+                if link.string and query == linkable_style(link.string, style.remove):
+                    
+                    if link[linkable_attr] == 'collapsible':
+                        found = True
+                        # HERE
+                                        
                     if (
                         not link.has_attr("href")
                         or link["href"]
-                        == "javascript:;"  # Misc. doesn't work for HTML requests
+                        == "javascript:;"  # doesn't work as HTML request
                     ):
                         continue
                     
                     url = urllib.parse.urljoin(info.url, link["href"])
                     if link[linkable_attr] == 'img':
-                        name = args[1]
-                        print(f"Opening {name}.")
-                        root = tk.Tk(className=name)
+                        found = True
+                        print(f"Opening {query}.")
+                        root = tk.Tk(className=query)
                         root.resizable(False, False)
                         r = requests.get(url)
                         img = Image.open(BytesIO(r.content))
@@ -360,8 +408,7 @@ def open_cmd(args, console: rich.console.Console, info: NavInfo) -> None:
                         label.pack()
                         label.image = tk_img
                         root.mainloop()
-                        found = True
-                        print("Closed image.\n")
+                        print(f"Closed {query}.\n")
                     else:
                         soup = print_page(url, console)
                         info.update(url, soup)
